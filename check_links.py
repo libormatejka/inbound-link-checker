@@ -4,7 +4,8 @@
 """
 Skript pro kontrolu nefunkčních interních odkazů na webu.
 Spouští se z příkazového řádku s URL sitemapy jako argumentem.
-Pokud nalezne nefunkční odkazy, vypíše je a skončí s chybovým kódem 1.
+Pokud nalezne nefunkční odkazy, vypíše je, uloží do 'broken_links_report.md'
+a skončí s chybovým kódem 1.
 """
 
 import requests
@@ -14,11 +15,10 @@ import concurrent.futures
 import time
 import threading
 import sys
-import os
 
 # --- Hlavní nastavení ---
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/5.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 # Počet souběžných vláken
 MAX_WORKERS = 10
@@ -60,6 +60,7 @@ def check_link(url):
         return (url, 0, "SKIPPED")
         
     try:
+        # Používáme GET + stream=True pro lepší maskování a rychlost
         response = requests.get(
             url, 
             headers=HEADERS, 
@@ -91,8 +92,10 @@ def check_page_links(page_url):
     try:
         response = requests.get(page_url, headers=HEADERS, timeout=10)
         if response.status_code >= 400:
-            print(f"  -> ⚠️ Varování: Samotná stránka '{page_url}' je nefunkční (Status: {response.status_code}), přeskočeno.")
-            return []
+            # U interních odkazů je i nefunkční stránka ze sitemapy problém
+            print(f"  -> 🚨 Chyba: Samotná stránka '{page_url}' je nefunkční (Status: {response.status_code})")
+            # Vrátíme samotnou URL jako nefunkční
+            return [(page_url, response.status_code, "BROKEN (Page from sitemap)")]
             
         soup = BeautifulSoup(response.content, 'html.parser')
         links_on_page = set()
@@ -194,8 +197,19 @@ def main(sitemap_url):
             print(f"🚨🚨🚨 NALEZENY CHYBY 🚨🚨🚨")
             print(f"Celkem nalezeno unikátních nefunkčních interních odkazů: {len(all_broken_links_set)}")
             print("--- Seznam všech unikátních nefunkčních odkazů ---")
-            for broken_url in sorted(list(all_broken_links_set)):
-                print(f"-> {broken_url}")
+
+            # Uložení chyb do souboru pro GitHub Issue
+            try:
+                with open("broken_links_report.md", "w", encoding="utf-8") as f:
+                    f.write(f"# 🚨 Nalezeny nefunkční odkazy ({len(all_broken_links_set)})\n\n")
+                    f.write("Během automatické kontroly webu byly nalezeny následující nefunkční interní odkazy:\n\n")
+                    for broken_url in sorted(list(all_broken_links_set)):
+                        print(f"-> {broken_url}")
+                        f.write(f"- {broken_url}\n")
+                print("\nℹ️ Report o chybách byl uložen do souboru broken_links_report.md")
+            except Exception as e:
+                print(f"Chyba při zápisu reportu do souboru: {e}", file=sys.stderr)
+            
             print("="*40)
             # Vracíme chybový kód, aby GitHub Action selhala
             sys.exit(1)

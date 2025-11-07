@@ -8,6 +8,12 @@ on:
 jobs:
   check-links:
     runs-on: ubuntu-latest
+    
+    # --- ZMĚNA Č. 1 ---
+    # Přidáme workflow oprávnění vytvářet issues
+    permissions:
+      contents: read  # Potřebné pro checkout
+      issues: write   # Potřebné pro vytváření issues
 
     steps:
       - name: 1. Stáhnout kód repozitáře
@@ -24,22 +30,21 @@ jobs:
           pip install requests beautifulsoup4 lxml
 
       - name: 4. Spustit kontrolu odkazů
-        id: check_links_step # Přidali jsme ID pro tento krok
+        id: check_links_step # Dáme kroku ID
         continue-on-error: true # DŮLEŽITÉ: Pokračuj, i když skript selže
         run: |
           python check_links.py ${{ vars.SITEMAP_URL_PROD }}
 
+      # --- ZMĚNA Č. 2 ---
+      # Krok 5 (create-github-app-token) byl smazán.
+      # Krok 6 je nyní krok 5 a používá vestavěný token.
       - name: 5. Vytvořit Issue v případě chyby
-        # Tento krok se spustí POUZE, pokud krok "check_links_step" selhal
-        if: steps.check_links_step.outcome == 'failure'
-        uses: actions/create-github-app-token@v1 # Akce pro bezpečný token
-        id: app-token
-
-      - name: 6. Publikovat Issue
-        if: steps.check_links_step.outcome == 'failure' # Spustí se jen při chybě
+        # Tento krok se spustí POUZE, pokud krok 4 selhal
+        if: steps.check_links_step.outcome == 'failure' 
         uses: peter-evans/create-issue-from-file@v5
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          # Použijeme bezpečný a vestavěný GITHUB_TOKEN
+          token: ${{ secrets.GITHUB_TOKEN }}
           title: '🚨 Nefunkční interní odkazy na webu'
           content-filepath: ./broken_links_report.md
           labels: |

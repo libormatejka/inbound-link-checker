@@ -4,8 +4,9 @@
 """
 Skript pro kontrolu nefunkčních interních odkazů na webu.
 Spouští se z příkazového řádku s URL sitemapy jako argumentem.
+
 Pokud nalezne nefunkční odkazy, vypíše je, uloží do 'broken_links_report.md'
-a skončí s chybovým kódem 1.
+s kontextem (kde byl odkaz nalezen) a skončí s chybovým kódem 1.
 """
 
 import requests
@@ -15,18 +16,16 @@ import concurrent.futures
 import time
 import threading
 import sys
+import collections
 
 # --- Hlavní nastavení ---
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
-# Počet souběžných vláken
 MAX_WORKERS = 10
-# Timeout pro jednotlivé dotazy
 LINK_TIMEOUT = 7
 
 # --- Cache pro již zkontrolované odkazy ---
-# Ukládá: { 'url': (status, message) }
 link_cache = {}
 cache_lock = threading.Lock()
 
@@ -60,7 +59,6 @@ def check_link(url):
         return (url, 0, "SKIPPED")
         
     try:
-        # Používáme GET + stream=True pro lepší maskování a rychlost
         response = requests.get(
             url, 
             headers=HEADERS, 
@@ -92,9 +90,7 @@ def check_page_links(page_url):
     try:
         response = requests.get(page_url, headers=HEADERS, timeout=10)
         if response.status_code >= 400:
-            # U interních odkazů je i nefunkční stránka ze sitemapy problém
             print(f"  -> 🚨 Chyba: Samotná stránka '{page_url}' je nefunkční (Status: {response.status_code})")
-            # Vrátíme samotnou URL jako nefunkční
             return [(page_url, response.status_code, "BROKEN (Page from sitemap)")]
             
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -117,11 +113,8 @@ def check_page_links(page_url):
                     parsed_link = urlparse(url)
                     hostname = parsed_link.hostname or ""
                     
-                    # --- FILTROVÁNÍ: POUZE INTERNÍ ---
-                    # Přeskočíme vše, co není http/https nebo není na naší doméně
                     if parsed_link.scheme not in ('http', 'https') or hostname != BASE_DOMAIN:
                         continue
-                    # --- Konec filtru ---
 
                     if url in link_cache:
                         status, message = link_cache[url]
@@ -168,7 +161,11 @@ def main(sitemap_url):
     start_time = time.time()
     page_urls = get_sitemap_urls(sitemap_url)
     
-    all_broken_links_set = set()
+    # *** ZMĚNA ZDE ***
+    # Místo sady (set) použijeme slovník (dictionary),
+    # kde klíč je nefunkční URL a hodnota je sada (set) stránek, kde byl nalezen.
+    # Použijeme defaultdict pro snadnější přidávání.
+    all_broken_links_map = collections.defaultdict(set)
     
     if page_urls:
         for i, page_url in enumerate(page_urls):
@@ -180,7 +177,9 @@ def main(sitemap_url):
                 print(f"  🚨 Nalezeny nefunkční odkazy:")
                 for url, status, msg in broken_links:
                     print(f"     -> {url} (Status: {status}, Důvod: {msg})")
-                    all_broken_links_set.add(url)
+                    # *** ZMĚNA ZDE ***
+                    # Uložíme si, že 'url' (nefunkční) byla nalezena na 'page_url' (aktuální stránka)
+                    all_broken_links_map[url].add(page_url)
             else:
                 print("  ✅ Všechny interní odkazy se zdají být v pořádku.")
                 
@@ -193,38 +192,47 @@ def main(sitemap_url):
         
         print("\n" + "="*40)
         
-        if all_broken_links_set:
+        # *** ZMĚNA ZDE ***
+        # Změnili jsme logiku reportování, aby používala novou mapu
+        if all_broken_links_map:
             print(f"🚨🚨🚨 NALEZENY CHYBY 🚨🚨🚨")
-            print(f"Celkem nalezeno unikátních nefunkčních interních odkazů: {len(all_broken_links_set)}")
-            print("--- Seznam všech unikátních nefunkčních odkazů ---")
+            print(f"Celkem nalezeno unikátních nefunkčních interních odkazů: {len(all_broken_links_map)}")
+            print("--- Seznam všech unikátních nefunkčních odkazů a jejich zdrojů ---")
 
-            # Uložení chyb do souboru pro GitHub Issue
             try:
                 with open("broken_links_report.md", "w", encoding="utf-8") as f:
-                    f.write(f"# 🚨 Nalezeny nefunkční odkazy ({len(all_broken_links_set)})\n\n")
+                    f.write(f"# 🚨 Nalezeny nefunkční odkazy ({len(all_broken_links_map)})\n\n")
                     f.write("Během automatické kontroly webu byly nalezeny následující nefunkční interní odkazy:\n\n")
-                    for broken_url in sorted(list(all_broken_links_set)):
-                        print(f"-> {broken_url}")
-                        f.write(f"- {broken_url}\n")
+                    
+                    # Seřadíme podle nefunkčního odkazu
+                    for broken_url, pages in sorted(all_broken_links_map.items()):
+                        print(f"\n-> NEFUNKČNÍ ODKAZ: {broken_url}")
+                        # Použijeme Markdown nadpis pro přehlednost v Issue
+                        f.write(f"## ❌ `{broken_url}`\n\n") 
+                        f.write("**Nalezeno na těchto stránkách:**\n")
+                        print("   Nalezeno na:")
+                        
+                        for page in sorted(list(pages)):
+                            print(f"   - {page}")
+                            f.write(f"- {page}\n")
+                        f.write("\n") # Přidá mezeru před dalším odkazem
+                            
                 print("\nℹ️ Report o chybách byl uložen do souboru broken_links_report.md")
             except Exception as e:
                 print(f"Chyba při zápisu reportu do souboru: {e}", file=sys.stderr)
             
             print("="*40)
-            # Vracíme chybový kód, aby GitHub Action selhala
-            sys.exit(1)
+            sys.exit(1) # Vracíme chybový kód
         else:
             print("🎉🎉🎉 VÝBORNĚ! 🎉🎉🎉")
             print("Žádné unikátní nefunkční interní odkazy nebyly nalezeny.")
             print("="*40)
-            # Vracíme kód 0 (úspěch)
-            sys.exit(0)
+            sys.exit(0) # Vracíme kód 0 (úspěch)
     else:
         print("Nebyla nalezena žádná URL v sitemapě. Kontrola končí.", file=sys.stderr)
-        sys.exit(1) # Selhání, pokud se nenačte sitemapa
+        sys.exit(1)
 
 if __name__ == "__main__":
-    # Přečteme URL sitemapy z prvního argumentu
     if len(sys.argv) < 2:
         print("Chyba: Musíte zadat URL sitemapy jako argument.", file=sys.stderr)
         print("Příklad: python check_links.py https://web.cz/sitemap.xml", file=sys.stderr)
